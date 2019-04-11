@@ -1,7 +1,6 @@
 cmake_minimum_required(VERSION 2.8.4)
 project(surgeon)
 
-set(LLVM_DIR /home/daniele/llvm/build/lib/cmake/llvm)
 find_package(LLVM REQUIRED CONFIG)
 message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}")
 
@@ -21,7 +20,7 @@ add_definitions(
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-rtti -std=c++11 -Wfatal-errors -g")
 
-set(SOURCE_FILES main.cpp JIT.cpp)
+set(SOURCE_FILES main.cpp JIT.cpp JITMemoryManager.cpp CallGraph.cpp)
 add_executable(surgeon ${SOURCE_FILES})
 
 set(LLVM_LIBS
@@ -78,3 +77,18 @@ target_link_libraries(surgeon
 target_link_libraries(surgeon
     pthread
 )
+
+add_custom_command(
+OUTPUT surgeon_helpers.bc
+DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/helpers.cpp
+COMMAND ${LLVM_TOOLS_BINARY_DIR}/clang++ -O3 -fno-exceptions -emit-llvm -c -o surgeon_helpers.bc ${CMAKE_CURRENT_SOURCE_DIR}/helpers.cpp
+) 
+
+add_custom_command(
+OUTPUT surgeon_inst_helpers.bc
+DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/instrumented_helpers.cpp
+COMMAND ${LLVM_TOOLS_BINARY_DIR}/clang++ -O3 -fno-exceptions -emit-llvm -c -o surgeon_inst_helpers.bc ${CMAKE_CURRENT_SOURCE_DIR}/instrumented_helpers.cpp
+) 
+
+add_custom_target(surgeon_helpers ALL DEPENDS surgeon_helpers.bc surgeon_inst_helpers.bc)
+add_dependencies(surgeon surgeon_helpers)
