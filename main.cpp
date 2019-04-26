@@ -21,7 +21,8 @@
 
 #include <stdlib.h>
 #include <signal.h>
-#include <unistd.h>
+#include <cctype>
+
 
 #include <JIT.h>
 
@@ -60,7 +61,8 @@ std::vector<std::string> splitAndPrepend(std::string strToSplit, char delimeter,
     std::vector<std::string> splittedStrings;
     while (std::getline(ss, item, delimeter))
     {
-        splittedStrings.push_back(prepend + item);
+        if (item.size() > 0)
+            splittedStrings.push_back(prepend + item);
     }
     return splittedStrings;
 }
@@ -138,10 +140,7 @@ int main(int argc, char** argv) {
     llvm::sys::DynamicLibrary::LoadLibraryPermanently("/home/daniele/llvm/build/lib/clang/7.0.0/lib/linux/"
         "libclang_rt.csi-x86_64.so");
 
-
     SurgeonJIT JIT;
-
-  
 
     // Prepare DiagnosticEngine 
     DiagnosticOptions DiagOpts;
@@ -282,21 +281,51 @@ int main(int argc, char** argv) {
         {
             if (i == 1)
             {
-                std::cout << "(surgeon) Which function do you want to analyze? ";
-                std::string command;
-                std::getline(std::cin, command);
-                trim(command);
-                while (!JIT.findSymbol(command, false))
+                while (true)
                 {
-                    std::cout << "The function '" << command << "' doesn't seem to exist. Try again.\n";
-                    std::cout << "(surgeon) Which function do you want to analyze? ";
+                    std::cout << "(surgeon) ";
+                    std::string command;
                     std::getline(std::cin, command);
                     trim(command);
-                }
-                void* newAddr = JIT.RecompileFunction(command, true);
-                std::cout << "Old addr: " << addr << ", new addr: " << newAddr << "\n";
 
-              //  addr = newAddr;
+                    auto tokens = splitAndPrepend(command, ' ');
+                    if (tokens.size() == 0)
+                    {
+                        std::cout << "Command not recognized\n";
+                    }
+                    else if (tokens[0] == "break" || (tokens[0].size() == 1 && tokens[0][0] == 'b'))
+                    {
+                        if (tokens.size() == 1)
+                        {
+                            std::cout << "Command 'b' requires an argument\n";
+
+                        }
+                        else if (!JIT.findSymbol(tokens[1], false))
+                        {
+                            std::cout << "The function '" << tokens[1] << "' doesn't exist\n";
+                        }
+                        else
+                        {
+                            void* newAddr = JIT.RecompileFunction(tokens[1], true);
+                          //  std::cout << "Old addr: " << addr << ", new addr: " << newAddr << "\n";
+                            break;
+                        }
+                    }
+                    else if (tokens[0] == "run" || (tokens[0].size() == 1 && tokens[0][0] == 'r'))
+                    {
+                        break;
+                    }
+                    else if (tokens[0] == "quit" || tokens[0] == "exit")
+                    {
+                        exit(0);
+                    }
+                    else
+                    {
+                        std::cout << "Command not recognized\n";
+                    }
+                }
+
+                //  addr = newAddr;
             }
 
             char** args = new char*[3];
