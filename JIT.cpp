@@ -331,7 +331,13 @@ void* SurgeonJIT::RecompileFunction(const std::string& functionName, bool enable
             assert(callCycle != nullptr && callCycle->getCalledFunction()->getName() == "call_to_interactive_cycle");
 
             call = builder.CreateCall((Function*)module->getOrInsertFunction((std::string)"original_" + functionName, functionType), args);
-            builder.CreateRet(call);
+            if (!functionType->getReturnType()->isVoidTy())
+            {
+                builder.CreateRet(call);
+            }
+            else {
+                builder.CreateRetVoid();
+            }
 
             builder.SetInsertPoint(callCycle);
             builder.CreateCall(cycle, args);

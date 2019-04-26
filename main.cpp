@@ -275,8 +275,8 @@ int main(int argc, char** argv) {
     {
         void* addr = (void*)entrySymbol.getAddress().get();
         assert(addr != nullptr);
-        size_t start = (getenv("SKIP_NORMAL") ? 1 : 0);
-        size_t end = (getenv("ONLY_ONCE") ? (start + 1) : 3);
+        size_t start = 1;
+        size_t end = (getenv("TWICE") ? (start + 2) : (start + 1));
         for (size_t i = start; i < end; ++i)
         {
             if (i == 1)
