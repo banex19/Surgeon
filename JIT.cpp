@@ -160,7 +160,7 @@ void* SurgeonJIT::RecompileFunction(const std::string& functionName, bool enable
                 std::string oldName = function.getName().str();
                 function.setName(newName);
                 function.setLinkage(GlobalValue::LinkageTypes::WeakODRLinkage);
-                llvm::errs() << "Changed name from " << oldName << " to " << function.getName().str() << "\n";
+                // llvm::errs() << "Changed name from " << oldName << " to " << function.getName().str() << "\n";
             }
         }
 
@@ -497,7 +497,7 @@ std::unique_ptr<Module> SurgeonJIT::optimizeModule(std::unique_ptr<Module> M) {
 
     if (enableCSI)
     {
-        llvm::errs() << "Enabling CSI for module " << M->getName() << "\n";
+        // llvm::errs() << "Enabling CSI for module " << M->getName() << "\n";
         builder.addExtension(llvm::PassManagerBuilder::EP_TapirLate,
             addComprehensiveStaticInstrumentationPass);
     }
