@@ -495,11 +495,11 @@ std::unique_ptr<Module> SurgeonJIT::optimizeModule(std::unique_ptr<Module> M) {
     // Create a function pass manager.
     auto FPM = llvm::make_unique<legacy::FunctionPassManager>(M.get());
 
-    // Add some optimizations.
+   /* // Add some optimizations.
     FPM->add(createInstructionCombiningPass());
     FPM->add(createReassociatePass());
     FPM->add(createGVNPass());
-    FPM->add(createCFGSimplificationPass());
+    FPM->add(createCFGSimplificationPass()); */
 
     if (enableCSI)
     {
