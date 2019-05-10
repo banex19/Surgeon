@@ -1,69 +1,9 @@
-#include <iostream>
-#include <algorithm>
-#include <string> 
-#include <vector>
-#include <sstream>
-#include <cstdlib>
 
-std::vector<std::string> split(std::string strToSplit, char delimeter) {
-    std::stringstream ss(strToSplit);
-    std::string item;
-    std::vector<std::string> splittedStrings;
-    while (std::getline(ss, item, delimeter))
-    {
-        if (item.size() > 0)
-            splittedStrings.push_back(item);
-    }
-    return splittedStrings;
-}
-
-static inline void lowerString(std::string& data) {
-    std::transform(data.begin(), data.end(), data.begin(), ::tolower);
-}
-
-// trim from start (in place)
-static inline void ltrim(std::string& s) {
-    s.erase(s.begin(), std::find_if(s.begin(), s.end(), [](int ch)
-        {
-            return !std::isspace(ch);
-        }));
-}
-
-// trim from end (in place)
-static inline void rtrim(std::string& s) {
-    s.erase(std::find_if(s.rbegin(), s.rend(), [](int ch)
-        {
-            return !std::isspace(ch);
-        }).base(), s.end());
-}
-
-// trim from both ends (in place)
-static inline void trim(std::string& s) {
-    ltrim(s);
-    rtrim(s);
-}
+#include "Interactive.h"
 
 
-std::vector<std::string> ShowPromptAndGetInput(const std::string& prompt) {
-    std::cout << prompt << " ";
-    std::string command;
-    std::getline(std::cin, command);
-    lowerString(command);
-    trim(command);
-    auto commands = split(command, ' ');
-    if (commands.size() > 0)
-        return commands;
-    else return { "" };
-}
 
-std::string ShowPromptAndGetSingleInput(const std::string& prompt) {
-    std::cout << prompt << " ";
-    std::string command;
-    std::getline(std::cin, command);
-    lowerString(command);
-    trim(command);
-    return command;
-}
+
 
 extern "C" {
 
@@ -82,9 +22,6 @@ extern "C" {
 #endif
         void call_to_interactive_cycle() {}
 
-    void interactive_cycle();
- 
-
     void preemptFunction() {
         std::cout << "Function intercepted\n";
         exit(0);
@@ -92,15 +29,6 @@ extern "C" {
 
     void interactive_preempt() {
         call_to_interactive_cycle();
-    }
-
-
-    bool IsYes(const std::string& command) {
-        return command == "y" || command == "yes";
-    }
-
-    bool IsNo(const std::string& command) {
-        return !IsYes(command);
     }
 
 

@@ -4,6 +4,7 @@
 #include "llvm/IR/Verifier.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Transforms/IPO.h"
+#include "llvm/Transforms/IPO/AlwaysInliner.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/Transforms/Utils/EscapeEnumerator.h"
 #include "llvm/Support/SourceMgr.h"
@@ -37,9 +38,11 @@ VModuleKey SurgeonJIT::addModule(std::unique_ptr<llvm::Module> M, bool enableCSI
 
     modulesCSIEnabled[M.get()] = enableCSI;
 
-
     // Add the module to the JIT with a new VModuleKey.
     auto K = ES.allocateVModule();
+
+    isInstrumented[K] = !addToDatabase;
+
     cantFail(OptimizeLayer.addModule(K, std::move(M)));
 
     return K;
@@ -92,6 +95,8 @@ void* SurgeonJIT::RecompileFunction(const std::string& functionName, bool enable
         llvm::errs() << "Function " << functionName << " to be recompiled cannot be found\n";
         return nullptr;
     }
+
+    std::string instrumentationPrefix = GenerateInstrumentationPrefix(functionName);
 
     size_t originalFunctionSize = GetSizeForSymbol(functionName);
     // llvm::errs() << "Size of original function: " << originalFunctionSize << "\n";
@@ -150,7 +155,7 @@ void* SurgeonJIT::RecompileFunction(const std::string& functionName, bool enable
                     entryPoint = true;
                 }
 
-                std::string newName = (std::string)"surgeon_instrumented__" + function.getName().str();
+                std::string newName = instrumentationPrefix + function.getName().str();
                 if (module->getFunction(newName))
                 {
                     llvm::errs() << "ERROR: Function " << newName << " already exists in module " << moduleIndex << "\n";
@@ -188,7 +193,7 @@ void* SurgeonJIT::RecompileFunction(const std::string& functionName, bool enable
                         if (IsInSet((std::string)target->getName(), allFunctions))
                         {
                             Function* substituteFunction = (Function*)module->getOrInsertFunction(
-                                (std::string)"surgeon_instrumented__" + target->getName().str(),
+                                instrumentationPrefix + target->getName().str(),
                                 target->getFunctionType());
 
                             if (CallInst * callInst = dyn_cast<CallInst>(&inst))
@@ -222,7 +227,7 @@ void* SurgeonJIT::RecompileFunction(const std::string& functionName, bool enable
 
         auto module = std::move(CloneModule(*modules[functionModuleMapping[functionName] - 1]));
 
-        LoadHelperModule(module->getContext());
+        auto helperModule = LoadHelperModule(module->getContext());
         std::unique_ptr<Module> helper = std::move(CloneModule(*helperModule));
 
         RemoveConstrsDestrAliasesAndSetGlobalsExternal(*helper, false, false);
@@ -248,7 +253,7 @@ void* SurgeonJIT::RecompileFunction(const std::string& functionName, bool enable
             if (name == functionName)
             {
                 functionType = function.getFunctionType();
-                function.setName("original_" + function.getName());
+                function.setName(instrumentationPrefix + "_original_" + function.getName());
             }
         }
 
@@ -263,7 +268,7 @@ void* SurgeonJIT::RecompileFunction(const std::string& functionName, bool enable
 
         auto & context = module->getContext();
         {
-            GlobalVariable* addressGlobal = (GlobalVariable*)module->getOrInsertGlobal("_surgeon_instrumented_address",
+            GlobalVariable* addressGlobal = (GlobalVariable*)module->getOrInsertGlobal(instrumentationPrefix + "address",
                 llvm::IntegerType::getInt64Ty(context));
             addressGlobal->setConstant(false);
             addressGlobal->setInitializer(llvm::ConstantInt::getIntegerValue(llvm::IntegerType::getInt64Ty(context),
@@ -286,7 +291,14 @@ void* SurgeonJIT::RecompileFunction(const std::string& functionName, bool enable
             CallInst* call = builder.CreateCall(cycleTemplate, std::vector<Value*>());
             builder.CreateRetVoid();
             InlineFunctionInfo info;
-            assert(InlineFunction(call, info, nullptr, false));
+            // llvm::errs() << "Inlining function " << *call->getCalledFunction() << "\n";
+            if (!InlineFunction(call, info, nullptr, false)) {
+
+                llvm::errs() << "Can't inline function " << *call->getCalledFunction() << "\n";
+
+                assert(false);
+            }
+
 
             std::vector<CallInst*> callsToReplace;
             for (auto& block : *cycle)
@@ -313,7 +325,7 @@ void* SurgeonJIT::RecompileFunction(const std::string& functionName, bool enable
             }
         }
         {
-            llvm::Function* interactiveTrampoline = (Function*)module->getOrInsertFunction("__surgeon_interactive_" + functionName, functionType);
+            llvm::Function* interactiveTrampoline = (Function*)module->getOrInsertFunction(instrumentationPrefix + "_interactive_" + functionName, functionType);
             llvm::BasicBlock* block = BasicBlock::Create(context, "entryBlock", interactiveTrampoline);
             IRBuilder<> builder{ block };
 
@@ -330,7 +342,7 @@ void* SurgeonJIT::RecompileFunction(const std::string& functionName, bool enable
             CallInst* callCycle = dyn_cast<CallInst>(&block->getInstList().front());
             assert(callCycle != nullptr && callCycle->getCalledFunction()->getName() == "call_to_interactive_cycle");
 
-            call = builder.CreateCall((Function*)module->getOrInsertFunction((std::string)"original_" + functionName, functionType), args);
+            call = builder.CreateCall((Function*)module->getOrInsertFunction(instrumentationPrefix + "_original_" + functionName, functionType), args);
             if (!functionType->getReturnType()->isVoidTy())
             {
                 builder.CreateRet(call);
@@ -380,23 +392,25 @@ void* SurgeonJIT::RecompileFunction(const std::string& functionName, bool enable
     }
 
     //llvm::errs() << "Finding new symbol\n";
-    void* finalAddr = (void*)OptimizeLayer.findSymbolIn(entryKey, "surgeon_instrumented__" + functionName, false).getAddress().get();
-    void* trampAddr = (void*)(findSymbol("__surgeon_interactive_" + functionName).getAddress().get());
+    std::string interactiveFunctionName = instrumentationPrefix + "_interactive_" + functionName;
+
+    void* finalAddr = (void*)OptimizeLayer.findSymbolIn(entryKey, instrumentationPrefix + functionName, false).getAddress().get();
+    void* trampAddr = (void*)(findSymbol(interactiveFunctionName).getAddress().get());
 
 
-    size_t trampolineSize = GetSizeForSymbol("__surgeon_interactive_" + functionName);
+    size_t trampolineSize = GetOveriddenSizeForSymbol(interactiveFunctionName);
     if (trampolineSize > originalFunctionSize) {
         std::cout << "Trampoline size: " << trampolineSize << ", original size: " << originalFunctionSize << "\n";
-        assert(GetSizeForSymbol("__surgeon_interactive_" + functionName) <= originalFunctionSize);
+        assert(GetSizeForSymbol(interactiveFunctionName) <= originalFunctionSize);
     }
 
-    void* pointerToAddr = (void*)OptimizeLayer.findSymbolIn(surgeonKey, "_surgeon_instrumented_address", false).getAddress().get();
+    void* pointerToAddr = (void*)OptimizeLayer.findSymbolIn(surgeonKey, instrumentationPrefix + "address", false).getAddress().get();
     assert(trampAddr);
     assert(finalAddr);
     assert(pointerToAddr);
 
     *((uintptr_t*)(pointerToAddr)) = (uintptr_t)finalAddr;
-    preemptFunction(functionName, "__surgeon_interactive_" + functionName);
+    preemptFunction(functionName, interactiveFunctionName);
 
     return finalAddr;
 }
@@ -434,7 +448,7 @@ void SurgeonJIT::preemptFunction(const std::string & functionName, const std::st
 
         assert(newAddr != nullptr);
 
-        memcpy(addr, newAddr, GetSizeForSymbol(preempter));
+        memcpy(addr, newAddr, GetOveriddenSizeForSymbol(preempter));
 
         //llvm::errs() << "Preempting function " << functionName << " (size " << GetSizeForSymbol(functionName) << ") with function of size " << GetSizeForSymbol(preempter) << "\n";
     }
@@ -482,6 +496,7 @@ static void addComprehensiveStaticInstrumentationPass(const llvm::PassManagerBui
         PM.add(createInstructionCombiningPass());
         PM.add(createDeadStoreEliminationPass());
         PM.add(createFunctionInliningPass());
+        PM.add(createAlwaysInlinerLegacyPass());
     }
 }
 
@@ -495,11 +510,11 @@ std::unique_ptr<Module> SurgeonJIT::optimizeModule(std::unique_ptr<Module> M) {
     // Create a function pass manager.
     auto FPM = llvm::make_unique<legacy::FunctionPassManager>(M.get());
 
-   /* // Add some optimizations.
-    FPM->add(createInstructionCombiningPass());
-    FPM->add(createReassociatePass());
-    FPM->add(createGVNPass());
-    FPM->add(createCFGSimplificationPass()); */
+    /* // Add some optimizations.
+     FPM->add(createInstructionCombiningPass());
+     FPM->add(createReassociatePass());
+     FPM->add(createGVNPass());
+     FPM->add(createCFGSimplificationPass()); */
 
     if (enableCSI)
     {
@@ -536,12 +551,17 @@ std::string SurgeonJIT::mangle(StringRef Name) {
     return MangledName;
 }
 
-void SurgeonJIT::LoadHelperModule(LLVMContext & context) {
+std::string SurgeonJIT::GenerateInstrumentationPrefix(const std::string & rootFunctionName)
+{
+    return "surgeon_instr_" + rootFunctionName + "_";
+}
+
+std::unique_ptr<llvm::Module> SurgeonJIT::LoadHelperModule(LLVMContext & context) {
     SMDiagnostic error;
     auto m = parseIRFile("surgeon_helpers.bc", error, context);
     if (m)
     {
-        helperModule = std::move(m);
+        return std::move(m);
     }
     else
     {

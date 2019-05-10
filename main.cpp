@@ -25,6 +25,7 @@
 
 
 #include <JIT.h>
+#include "Interactive.h"
 
 using namespace clang;
 using namespace llvm;
@@ -34,23 +35,23 @@ static inline void lowerString(std::string& data) {
 }
 
 // trim from start (in place)
-static inline void ltrim(std::string &s) {
-    s.erase(s.begin(), std::find_if(s.begin(), s.end(), [] (int ch)
-    {
-        return !std::isspace(ch);
-    }));
+static inline void ltrim(std::string& s) {
+    s.erase(s.begin(), std::find_if(s.begin(), s.end(), [](int ch)
+        {
+            return !std::isspace(ch);
+        }));
 }
 
 // trim from end (in place)
-static inline void rtrim(std::string &s) {
-    s.erase(std::find_if(s.rbegin(), s.rend(), [] (int ch)
-    {
-        return !std::isspace(ch);
-    }).base(), s.end());
+static inline void rtrim(std::string& s) {
+    s.erase(std::find_if(s.rbegin(), s.rend(), [](int ch)
+        {
+            return !std::isspace(ch);
+        }).base(), s.end());
 }
 
 // trim from both ends (in place)
-static inline void trim(std::string &s) {
+static inline void trim(std::string& s) {
     ltrim(s);
     rtrim(s);
 }
@@ -137,18 +138,21 @@ int main(int argc, char** argv) {
 
     ParseLLVMOptions();
 
-    llvm::sys::DynamicLibrary::LoadLibraryPermanently("/home/daniele/llvm/build/lib/clang/7.0.0/lib/linux/"
-        "libclang_rt.csi-x86_64.so");
+    if (llvm::sys::DynamicLibrary::LoadLibraryPermanently("/home/daniele/llvm/build/lib/clang/7.0.0/lib/linux/"
+        "libclang_rt.csi-x86_64.so")) {
+        std::cout << "Error loading CSI runtime\n";
+        exit(-1);
+    }
 
     SurgeonJIT JIT;
 
     // Prepare DiagnosticEngine 
     DiagnosticOptions DiagOpts;
-    TextDiagnosticPrinter *textDiagPrinter =
+    TextDiagnosticPrinter* textDiagPrinter =
         new clang::TextDiagnosticPrinter(errs(),
             &DiagOpts);
     IntrusiveRefCntPtr<clang::DiagnosticIDs> pDiagIDs;
-    DiagnosticsEngine *pDiagnosticsEngine =
+    DiagnosticsEngine* pDiagnosticsEngine =
         new DiagnosticsEngine(pDiagIDs,
             &DiagOpts,
             textDiagPrinter);
@@ -164,7 +168,7 @@ int main(int argc, char** argv) {
     for (auto& name : filenames)
     {
         // Prepare compilation arguments
-        std::vector<const char *> args;
+        std::vector<const char*> args;
         args.push_back(name.c_str());
         for (size_t i = 3; i < argc; ++i)
         {
@@ -198,11 +202,11 @@ int main(int argc, char** argv) {
 
         const std::shared_ptr<clang::TargetOptions> targetOptions = std::make_shared<clang::TargetOptions>();
         targetOptions->Triple = std::string("bpf");
-        TargetInfo *pTargetInfo = TargetInfo::CreateTargetInfo(*pDiagnosticsEngine, targetOptions);
+        TargetInfo* pTargetInfo = TargetInfo::CreateTargetInfo(*pDiagnosticsEngine, targetOptions);
         Clang.setTarget(pTargetInfo);
 
         // Create and execute action
-        CodeGenAction *compilerAction = new EmitLLVMOnlyAction();
+        CodeGenAction* compilerAction = new EmitLLVMOnlyAction();
         //CodeGenAction *compilerAction = new EmitAssemblyAction();
         if (!Clang.ExecuteAction(*compilerAction))
         {
@@ -279,16 +283,17 @@ int main(int argc, char** argv) {
         size_t end = (getenv("TWICE") ? (start + 2) : (start + 1));
         for (size_t i = start; i < end; ++i)
         {
+            int numArgs = 0;
+            char** args = nullptr;
+
+            std::set<std::string> instrumented;
+
             if (i == 1)
             {
                 while (true)
                 {
-                    std::cout << "(surgeon) ";
-                    std::string command;
-                    std::getline(std::cin, command);
-                    trim(command);
+                    auto tokens = ShowPromptAndGetInput("(surgeon)");
 
-                    auto tokens = splitAndPrepend(command, ' ');
                     if (tokens.size() == 0)
                     {
                         std::cout << "Command not recognized\n";
@@ -300,19 +305,36 @@ int main(int argc, char** argv) {
                             std::cout << "Command 'b' requires an argument\n";
 
                         }
+                        else if (JIT.IsFunctionInAnySubtree(tokens[1], instrumented)) {
+                            std::cout << "Function " << tokens[1] << " is already in an instrumented tree\n";
+                        }
                         else if (!JIT.findSymbol(tokens[1], false))
                         {
-                            std::cout << "The function '" << tokens[1] << "' doesn't exist\n";
+                            std::cout << "Function '" << tokens[1] << "' doesn't exist\n";
                         }
                         else
                         {
                             void* newAddr = JIT.RecompileFunction(tokens[1], true);
-                          //  std::cout << "Old addr: " << addr << ", new addr: " << newAddr << "\n";
-                            break;
+                            instrumented.insert(tokens[1]);
+                            //  std::cout << "Old addr: " << addr << ", new addr: " << newAddr << "\n";
                         }
                     }
                     else if (tokens[0] == "run" || (tokens[0].size() == 1 && tokens[0][0] == 'r'))
                     {
+                        numArgs = tokens.size();
+                        args = new char* [numArgs];
+
+                        args[0] = new char[4];
+                        memcpy(args[0], "jit", 3);
+                        args[0][3] = '\0';
+
+                        // Copy any additional argument passed by the user.
+                        for (size_t i = 1; i < tokens.size(); ++i) {
+                            args[i] = new char[tokens[i].size() + 1];
+                            memcpy(args[i], tokens[i].data(), tokens[i].size());
+                            args[i][tokens[i].size()] = '\0';
+                        }
+
                         break;
                     }
                     else if (tokens[0] == "quit" || tokens[0] == "exit")
@@ -328,15 +350,14 @@ int main(int argc, char** argv) {
                 //  addr = newAddr;
             }
 
-            char** args = new char*[3];
-            args[0] = (char*)"jit";
-            args[1] = (char*)"../test";
-            args[2] = (char*)"test.cpp,test2.cpp,add.cpp";
+
             int(*fn)(int, char**) = (int(*)(int, char**))(addr);
 
-            int res = fn(1, args);
+            int res = fn(numArgs, args);
             std::cout << "Main returned " << res << "\n";
 
+            for (int i = 0; i < numArgs; ++i)
+                delete[] args[i];
             delete[]args;
         }
     }
