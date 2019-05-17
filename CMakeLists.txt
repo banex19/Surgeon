@@ -18,9 +18,9 @@ add_definitions(
 -D__STDC_CONSTANT_MACROS
 )
 
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-rtti -std=c++11 -Wfatal-errors -g")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC -fno-rtti -std=c++11 -Wfatal-errors -g")
 
-set(SOURCE_FILES main.cpp JIT.cpp JITMemoryManager.cpp CallGraph.cpp Interactive.cpp)
+set(SOURCE_FILES main.cpp JIT.cpp JITMemoryManager.cpp CallGraph.cpp Interactive.cpp Options.cpp)
 add_executable(surgeon ${SOURCE_FILES})
 
 set(LLVM_LIBS

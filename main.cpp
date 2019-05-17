@@ -30,32 +30,6 @@
 using namespace clang;
 using namespace llvm;
 
-static inline void lowerString(std::string& data) {
-    std::transform(data.begin(), data.end(), data.begin(), ::tolower);
-}
-
-// trim from start (in place)
-static inline void ltrim(std::string& s) {
-    s.erase(s.begin(), std::find_if(s.begin(), s.end(), [](int ch)
-        {
-            return !std::isspace(ch);
-        }));
-}
-
-// trim from end (in place)
-static inline void rtrim(std::string& s) {
-    s.erase(std::find_if(s.rbegin(), s.rend(), [](int ch)
-        {
-            return !std::isspace(ch);
-        }).base(), s.end());
-}
-
-// trim from both ends (in place)
-static inline void trim(std::string& s) {
-    ltrim(s);
-    rtrim(s);
-}
-
 std::vector<std::string> splitAndPrepend(std::string strToSplit, char delimeter, const std::string& prepend = "") {
     std::stringstream ss(strToSplit);
     std::string item;
@@ -144,7 +118,27 @@ int main(int argc, char** argv) {
         exit(-1);
     }
 
+    OptionsStore::LoadOptions("surgeon.cfg");
+
     SurgeonJIT JIT;
+
+    // Preload tools from the configuration file.
+    std::fstream toolFile{ "tools.cfg" };
+    if (toolFile) {
+        std::string line;
+        while (std::getline(toolFile, line)) {
+            ltrim(line);
+            if (line.size() == 0 || line[0] == '#')
+                continue;
+            auto tokens = split(line, ' ', true);
+            if (tokens.size() != 3)
+                continue;
+            CSITool tool{ tokens[0], tokens[1], tokens[2] };
+            JIT.LoadCSITool(tool);
+        }
+
+        toolFile.close();
+    }
 
     // Prepare DiagnosticEngine 
     DiagnosticOptions DiagOpts;
@@ -271,8 +265,6 @@ int main(int argc, char** argv) {
         }
     }
 
-
-
     auto entrySymbol = JIT.findSymbol("main");
 
     if (entrySymbol)
@@ -300,23 +292,37 @@ int main(int argc, char** argv) {
                     }
                     else if (tokens[0] == "break" || (tokens[0].size() == 1 && tokens[0][0] == 'b'))
                     {
-                        if (tokens.size() == 1)
-                        {
-                            std::cout << "Command 'b' requires an argument\n";
+                        const std::string& function = tokens.size() > 1 ? tokens[1] : "";
 
-                        }
-                        else if (JIT.IsFunctionInAnySubtree(tokens[1], instrumented)) {
-                            std::cout << "Function " << tokens[1] << " is already in an instrumented tree\n";
-                        }
-                        else if (!JIT.findSymbol(tokens[1], false))
+
+                        if (tokens.size() < 3)
                         {
-                            std::cout << "Function '" << tokens[1] << "' doesn't exist\n";
+                            std::cout << "Command 'break' requires at least two arguments (function to instrument and tool name)\n";
+                        }
+                        else if (JIT.IsFunctionInAnySubtree(function, instrumented)) {
+                            std::cout << "Function " << function << " is already in an instrumented tree\n";
+                        }
+                        else if (!JIT.findSymbol(function, false))
+                        {
+                            std::cout << "Function '" << function << "' doesn't exist\n";
                         }
                         else
                         {
-                            void* newAddr = JIT.RecompileFunction(tokens[1], true);
-                            instrumented.insert(tokens[1]);
-                            //  std::cout << "Old addr: " << addr << ", new addr: " << newAddr << "\n";
+                            bool toolsExist = true;
+                            std::vector<std::string> tools{ tokens.begin() + 2, tokens.end() };
+                            for (auto& tool : tools) {
+                                if (!JIT.IsCSIToolRegistered(tool))
+                                {
+                                    std::cout << "Tool " << tool << " is not registered\n";
+                                    toolsExist = false;
+                                    break;
+                                }
+                            }
+                            if (toolsExist) {
+                                void* newAddr = JIT.RecompileFunction(function, true, tools);
+                                instrumented.insert(function);
+                                //  std::cout << "Old addr: " << addr << ", new addr: " << newAddr << "\n";
+                            }
                         }
                     }
                     else if (tokens[0] == "run" || (tokens[0].size() == 1 && tokens[0][0] == 'r'))
@@ -337,7 +343,18 @@ int main(int argc, char** argv) {
 
                         break;
                     }
-                    else if (tokens[0] == "quit" || tokens[0] == "exit")
+                    else if (tokens[0] == "load") {
+                        if (tokens.size() != 4)
+                        {
+                            std::cout << "Command 'load' requires three arguments (tool's library path, bitcode path, and tool name)\n";
+                        }
+                        else {
+                            bool res = JIT.LoadCSITool(CSITool(tokens[3], tokens[1], tokens[2]));
+                            if (res) std::cout << "Loaded CSI tool " << tokens[1] << " with name " << tokens[3] << "\n";
+                        }
+
+                    }
+                    else if (tokens[0] == "quit" || tokens[0] == "exit" || (tokens[0].size() == 1 && tokens[0][0] == 'q'))
                     {
                         exit(0);
                     }

@@ -23,7 +23,7 @@ extern "C" {
         void call_to_interactive_cycle() {}
 
     void preemptFunction() {
-        std::cout << "Function intercepted\n";
+        //std::cout << "Function intercepted\n";
         exit(0);
     }
 
@@ -57,9 +57,10 @@ extern "C" {
                         notRecognized = true;
                     }
                 }
+                
                 for (size_t i = 0; i < runN; ++i) {
                     if (checkpointEnabled)
-                    {
+                    {                      
                         saveCheckpoint();
                         interactive_fake_call();
                         restoreCheckpoint();

@@ -28,6 +28,8 @@
 #include <vector>
 #include <unordered_map>
 #include "CallGraph.h"
+#include "Options.h"
+#include "CSITool.h"
 
 using namespace llvm;
 using namespace llvm::orc;
@@ -76,6 +78,7 @@ private:
 class SurgeonJIT {
 
     using Module = llvm::Module;
+    using DynamicLibrary = llvm::sys::DynamicLibrary;
 
 private:
     ObjectListener listener;
@@ -92,7 +95,10 @@ private:
     std::vector<std::unique_ptr<Module>> modules;
     std::unordered_map<std::string, size_t> functionModuleMapping;
     std::unordered_map<llvm::Module*, bool> modulesCSIEnabled;
+    std::unordered_map<llvm::Module*, std::vector<std::string>> modulesCSITool;
     std::unordered_map<VModuleKey, bool> isInstrumented;
+
+    std::unordered_map<std::string, LoadedCSITool> csiTools;
 
     using OptimizeFunction =
         std::function<std::unique_ptr<Module>(std::unique_ptr<Module>)>;
@@ -129,7 +135,11 @@ public:
     {
         llvm::sys::DynamicLibrary::LoadLibraryPermanently(nullptr);
         listener.RegisterInstrumentationMap(isInstrumented);
-        LoadAndAddModule("surgeon_inst_helpers.bc", true);
+        CSITool checkpointTool{ "cp",
+            OptionsStore::GetOptionOrError("checkpoint_tool_library"),
+            OptionsStore::GetOptionOrError("checkpoint_tool_bitcode") };
+        LoadCSITool(checkpointTool);
+        LoadAndAddModule("surgeon_inst_helpers.bc", true, { "cp" });
     }
 
                             ~SurgeonJIT() {
@@ -139,10 +149,11 @@ public:
 
                             TargetMachine& getTargetMachine() { return *TM; }
 
-                            VModuleKey addModule(std::unique_ptr<Module> M, bool enableCSI = false, bool addToDatabase = true);
+                            VModuleKey addModule(std::unique_ptr<Module> M, bool enableCSI = false, bool addToDatabase = true, const std::vector<std::string>& tools = {});
 
-                            void* RecompileFunction(const std::string& functionName, bool enableCSI);
+                            void* RecompileFunction(const std::string& functionName, bool enableCSI, const std::vector<std::string>& tools);
                             void CallCSIConstructorForModule(VModuleKey& key, bool mustExist = false);
+
                             bool IsFunctionInSubtree(const std::string& function, const std::string& subtreeRoot) {
                                 auto tree = callGraph.GetNodeAndAllChildren(subtreeRoot);
                                 return tree.find(function) != tree.end();
@@ -169,6 +180,9 @@ public:
                             size_t GetSizeForSymbol(const std::string& name) { return listener.GetSizeForSymbol(name); }
                             size_t GetOveriddenSizeForSymbol(const std::string& name) { return listener.GetOveriddenSizeForSymbol(name); }
 
+                            bool LoadCSITool(const CSITool& tool);
+                            bool IsCSIToolRegistered(const std::string& toolName) { return csiTools.find(toolName) != csiTools.end(); }
+
 private:
     JITSymbol resolveSymbol(const std::string Name);
 
@@ -181,8 +195,11 @@ private:
 
     std::unique_ptr<llvm::Module> LoadHelperModule(LLVMContext& context);
 
+    DynamicLibrary GetCSIToolFromHookName(const std::string& name);
+    std::string GetCSIHookName(const std::string& prefixedHook);
 
-    void LoadAndAddModule(const std::string& moduleName, bool enableCSI);
+
+    void LoadAndAddModule(const std::string& moduleName, bool enableCSI, const std::vector<std::string>& tools);
 
     friend class ObjectListener;
 

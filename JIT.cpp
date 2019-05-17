@@ -12,7 +12,13 @@
 #include "llvm/Linker/Linker.h"
 #include <iostream>
 
-VModuleKey SurgeonJIT::addModule(std::unique_ptr<llvm::Module> M, bool enableCSI, bool addToDatabase) {
+#ifndef WIN32
+#include <dlfcn.h>
+#endif
+
+// #define USE_LLVM_LOADLIB
+
+VModuleKey SurgeonJIT::addModule(std::unique_ptr<llvm::Module> M, bool enableCSI, bool addToDatabase, const std::vector<std::string>& tools) {
     if (addToDatabase)
     {
 
@@ -37,6 +43,7 @@ VModuleKey SurgeonJIT::addModule(std::unique_ptr<llvm::Module> M, bool enableCSI
     }
 
     modulesCSIEnabled[M.get()] = enableCSI;
+    modulesCSITool[M.get()] = tools;
 
     // Add the module to the JIT with a new VModuleKey.
     auto K = ES.allocateVModule();
@@ -89,12 +96,13 @@ void RemoveConstrsDestrAliasesAndSetGlobalsExternal(llvm::Module& M, bool remove
     }
 }
 
-void* SurgeonJIT::RecompileFunction(const std::string& functionName, bool enableCSI) {
+void* SurgeonJIT::RecompileFunction(const std::string& functionName, bool enableCSI, const std::vector<std::string>& tools) {
     if (functionModuleMapping.find(functionName) == functionModuleMapping.end())
     {
         llvm::errs() << "Function " << functionName << " to be recompiled cannot be found\n";
         return nullptr;
     }
+
 
     std::string instrumentationPrefix = GenerateInstrumentationPrefix(functionName);
 
@@ -210,7 +218,7 @@ void* SurgeonJIT::RecompileFunction(const std::string& functionName, bool enable
             }
         }
 
-        auto key = addModule(std::move(module), enableCSI, false);
+        auto key = addModule(std::move(module), enableCSI, false, tools);
         keys.push_back(key);
 
         if (IsInSet(functionName, functionSet))
@@ -458,6 +466,51 @@ void SurgeonJIT::preemptFunction(const std::string & functionName, const std::st
     }
 }
 
+bool SurgeonJIT::LoadCSITool(const CSITool& tool)
+{
+    auto& toolName = tool.GetToolName();
+    auto& libraryFilename = tool.GetLibraryFilename();
+
+    if (IsCSIToolRegistered(toolName)) {
+        std::cout << "Tool '" << toolName << "' has already been loaded\n";
+        return false;
+    }
+
+    std::string err;
+#if defined (USE_LLVM_LOADLIB) || defined(WIN32)
+    DynamicLibrary libHandle = llvm::sys::DynamicLibrary::getPermanentLibrary(libraryFilename.c_str(), &err);
+#else
+    void* handle = dlopen(libraryFilename.c_str(), RTLD_LAZY | RTLD_GLOBAL | RTLD_DEEPBIND);
+    if (!handle) {
+        llvm::errs() << "Error loading CSI tool " << libraryFilename << " through dlopen\n";
+        return false;
+    }
+    DynamicLibrary libHandle = llvm::sys::DynamicLibrary::addPermanentLibrary(handle, &err);
+#endif
+
+    if (err.size() > 0) {
+        llvm::errs() << "Error loading CSI tool " << libraryFilename << ": " << err << "\n";
+        return false;
+    }
+
+    LoadedCSITool loadedTool{ tool, libHandle };
+
+    void* addr = loadedTool.GetLibrary().getAddressOfSymbol("__csi_init");
+    if (addr == nullptr) {
+        // Unfortunately we have to exit because LLVM does not provide a way to unload a library.
+        llvm::errs() << "FATAL: CSI tool " << libraryFilename << " does not contain a definition for __csi_init\n";
+        exit(-1);
+        return false;
+    }
+
+    void(*toolInit)(void) = (void(*)(void))addr;
+    toolInit();
+
+    csiTools.insert(std::make_pair(std::string(toolName), loadedTool));
+
+    return true;
+}
+
 JITSymbol SurgeonJIT::resolveSymbol(const std::string Name) {
     std::string actualName = Name;
 
@@ -470,6 +523,22 @@ JITSymbol SurgeonJIT::resolveSymbol(const std::string Name) {
     if (auto Sym = overrides.searchOverrides(actualName))
         return Sym;
 
+    // CSI tools.
+    if (Name.find("__csi_") == 0) {
+        DynamicLibrary tool = GetCSIToolFromHookName(Name);
+        if (tool.isValid()) {
+            std::string hookName = GetCSIHookName(Name);
+            void* addr = tool.getAddressOfSymbol(hookName.c_str());
+            if (addr) {
+                //std::cout << "Found address " << addr << " from tool for symbol " << Name << "\n";
+                return JITSymbol((uint64_t)addr, JITSymbolFlags::Exported);
+            }
+            //else { std::cout << "Tool found but couldn't find address for symbol " << hookName << "\n"; }
+        }
+        else {
+            //   std::cout << "Couldn't find tool for symbol " << Name << "\n";
+        }
+    }
 
     if (uint64_t addr = SectionMemoryManager::getSymbolAddressInProcess(actualName))
         return JITSymbol(addr, JITSymbolFlags::Exported);
@@ -478,10 +547,14 @@ JITSymbol SurgeonJIT::resolveSymbol(const std::string Name) {
     return JITSymbol(nullptr);
 }
 
+std::vector<LoadedCSITool>  toolsForCSIPass;
+
 static void addComprehensiveStaticInstrumentationPass(const llvm::PassManagerBuilder & builder,
     llvm::legacy::PassManagerBase & PM) {
     CSIOptions options;
     options.jitMode = true;
+    for (auto& tool : toolsForCSIPass)
+        options.tools.push_back(std::make_pair(tool.GetToolName(), tool.GetBitcodeFilename()));
     PM.add(createComprehensiveStaticInstrumentationLegacyPass(options));
 
     // CSI inserts complex instrumentation that mostly follows the logic of the
@@ -519,6 +592,10 @@ std::unique_ptr<Module> SurgeonJIT::optimizeModule(std::unique_ptr<Module> M) {
     if (enableCSI)
     {
         // llvm::errs() << "Enabling CSI for module " << M->getName() << "\n";
+        auto tools = modulesCSITool[M.get()];
+        toolsForCSIPass.clear();
+        for (auto& tool : tools)
+            toolsForCSIPass.push_back(csiTools[tool]);
         builder.addExtension(llvm::PassManagerBuilder::EP_TapirLate,
             addComprehensiveStaticInstrumentationPass);
     }
@@ -571,13 +648,37 @@ std::unique_ptr<llvm::Module> SurgeonJIT::LoadHelperModule(LLVMContext & context
     }
 }
 
-void SurgeonJIT::LoadAndAddModule(const std::string & moduleName, bool enableCSI) {
+llvm::sys::DynamicLibrary SurgeonJIT::GetCSIToolFromHookName(const std::string & name)
+{
+    // Name will be in the form of "__csi_TOOLNAME_xxx".
+    std::string toolName = name.substr(6);
+    toolName = toolName.substr(0, toolName.find("_"));
+
+    //std::cout << "Looking for tool " << toolName << " (from " << name << ")\n";
+
+    if (csiTools.find(toolName) != csiTools.end()) {
+        return csiTools[toolName].GetLibrary();
+    }
+
+    return DynamicLibrary();
+}
+
+std::string SurgeonJIT::GetCSIHookName(const std::string & prefixedHook)
+{
+    // Name will be in the form of "__csi_TOOLNAME_xxx".
+    std::string hookName = prefixedHook.substr(6);
+    hookName = hookName.substr(hookName.find("_") + 1);
+    hookName = "__csi_" + hookName;
+    return hookName;
+}
+
+void SurgeonJIT::LoadAndAddModule(const std::string & moduleName, bool enableCSI, const std::vector<std::string>& tools) {
     LLVMContext* context = new LLVMContext();
     SMDiagnostic error;
     auto m = parseIRFile(moduleName, error, *context);
     if (m)
     {
-        auto key = addModule(std::move(m), enableCSI, false);
+        auto key = addModule(std::move(m), enableCSI, false, tools);
         if (auto Err = OptimizeLayer.emitAndFinalize(key))
         {
             llvm::errs() << "Error: " << Err << "\n";
